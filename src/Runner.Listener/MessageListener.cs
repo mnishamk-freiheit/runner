@@ -21,8 +21,10 @@ namespace GitHub.Runner.Listener
     {
         Task<Boolean> CreateSessionAsync(CancellationToken token);
         Task DeleteSessionAsync();
-        Task<TaskAgentMessage> GetNextMessageAsync(CancellationToken token);
+        Task<TaskAgentMessage> GetNextMessageAsync(CancellationTokenSource token);
         Task DeleteMessageAsync(TaskAgentMessage message);
+        void OnJobStarted(object sender, EventArgs e);
+        void OnJobCompleted(object sender, EventArgs e);
     }
 
     public sealed class MessageListener : RunnerService, IMessageListener
@@ -38,6 +40,8 @@ namespace GitHub.Runner.Listener
         private readonly TimeSpan _sessionConflictRetryLimit = TimeSpan.FromMinutes(4);
         private readonly TimeSpan _clockSkewRetryLimit = TimeSpan.FromMinutes(30);
         private readonly Dictionary<string, int> _sessionCreationExceptionTracker = new Dictionary<string, int>();
+        private TaskAgentStatus runnerStatus = TaskAgentStatus.Online;
+        private TaskCompletionSource<bool> jobStatusNotification = new TaskCompletionSource<bool>();
 
         public override void Initialize(IHostContext hostContext)
         {
@@ -170,7 +174,23 @@ namespace GitHub.Runner.Listener
             }
         }
 
-        public async Task<TaskAgentMessage> GetNextMessageAsync(CancellationToken token)
+        // define event handler for job started event
+        public void OnJobStarted(object sender, EventArgs e)
+        {
+            _term.WriteLine($"Job started.");
+            runnerStatus = TaskAgentStatus.Busy;
+            jobStatusNotification.TrySetResult(true);
+        }
+
+        // define event handler for job completed event
+        public void OnJobCompleted(object sender, EventArgs e)
+        {
+            _term.WriteLine($"Job completed.");
+            runnerStatus = TaskAgentStatus.Online;
+            jobStatusNotification.TrySetResult(true);
+        }
+
+        public async Task<TaskAgentMessage> GetNextMessageAsync(CancellationTokenSource tokenSource)
         {
             Trace.Entering();
             ArgUtil.NotNull(_session, nameof(_session));
@@ -182,14 +202,23 @@ namespace GitHub.Runner.Listener
             heartbeat.Restart();
             while (true)
             {
-                token.ThrowIfCancellationRequested();
+                tokenSource.Token.ThrowIfCancellationRequested();
+                jobStatusNotification = new TaskCompletionSource<bool>();
                 TaskAgentMessage message = null;
                 try
                 {
-                    message = await _runnerServer.GetAgentMessageAsync(_settings.PoolId,
+                    _term.WriteLine($"Getting messages with runner status as {runnerStatus}.");
+                    var getMessageTask = _runnerServer.GetAgentMessageAsync(_settings.PoolId,
                                                                 _session.SessionId,
                                                                 _lastMessageId,
-                                                                token);
+                                                                tokenSource.Token);
+
+                    var completedTask = await Task.WhenAny(getMessageTask, jobStatusNotification.Task);
+                    
+                    if (completedTask == jobStatusNotification.Task)
+                    {
+                        continue;
+                    }
 
                     // Decrypt the message body if the session is using encryption
                     message = DecryptMessage(message);
@@ -206,7 +235,7 @@ namespace GitHub.Runner.Listener
                         continuousError = 0;
                     }
                 }
-                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                catch (OperationCanceledException) when (tokenSource.Token.IsCancellationRequested)
                 {
                     Trace.Info("Get next message has been cancelled.");
                     throw;
@@ -223,7 +252,7 @@ namespace GitHub.Runner.Listener
                     Trace.Error(ex);
 
                     // don't retry if SkipSessionRecover = true, DT service will delete agent session to stop agent from taking more jobs.
-                    if (ex is TaskAgentSessionExpiredException && !_settings.SkipSessionRecover && await CreateSessionAsync(token))
+                    if (ex is TaskAgentSessionExpiredException && !_settings.SkipSessionRecover && await CreateSessionAsync(tokenSource.Token))
                     {
                         Trace.Info($"{nameof(TaskAgentSessionExpiredException)} received, recovered by recreate session.");
                     }
@@ -258,7 +287,7 @@ namespace GitHub.Runner.Listener
                         await _runnerServer.RefreshConnectionAsync(RunnerConnectionType.MessageQueue, TimeSpan.FromSeconds(60));
 
                         Trace.Info("Sleeping for {0} seconds before retrying.", _getNextMessageRetryInterval.TotalSeconds);
-                        await HostContext.Delay(_getNextMessageRetryInterval, token);
+                        await HostContext.Delay(_getNextMessageRetryInterval, tokenSource.Token);
                     }
                 }
 

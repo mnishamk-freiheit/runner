@@ -27,6 +27,8 @@ namespace GitHub.Runner.Listener
         bool Cancel(JobCancelMessage message);
         Task WaitAsync(CancellationToken token);
         Task ShutdownAsync();
+        event EventHandler<EventArgs> JobStarted;
+        event EventHandler<EventArgs> JobCompleted; 
     }
 
     // This implementation of IJobDispatcher is not thread safe.
@@ -55,6 +57,11 @@ namespace GitHub.Runner.Listener
 
         private TaskCompletionSource<bool> _runOnceJobCompleted = new TaskCompletionSource<bool>();
 
+        public event EventHandler<EventArgs> JobStarted;
+        public event EventHandler<EventArgs> JobCompleted;
+
+        private ITerminal _term;
+
         public override void Initialize(IHostContext hostContext)
         {
             base.Initialize(hostContext);
@@ -73,6 +80,8 @@ namespace GitHub.Runner.Listener
             // _channelTimeout should be in range [30,  300] seconds
             _channelTimeout = TimeSpan.FromSeconds(Math.Min(Math.Max(channelTimeoutSeconds, 30), 300));
             Trace.Info($"Set runner/worker IPC timeout to {_channelTimeout.TotalSeconds} seconds.");
+
+            _term = HostContext.GetService<ITerminal>();
         }
 
         public TaskCompletionSource<bool> RunOnceJobCompleted => _runOnceJobCompleted;
@@ -335,6 +344,13 @@ namespace GitHub.Runner.Listener
             Busy = true;
             try
             {
+                //invoke JobStarted Event
+                if (JobStarted != null)
+                {
+                    _term.WriteLine($"Job {message.JobId} started.");
+                    JobStarted(this, new EventArgs());
+                }
+
                 if (previousJobDispatch != null)
                 {
                     Trace.Verbose($"Make sure the previous job request {previousJobDispatch.JobId} has successfully finished on worker.");
@@ -650,6 +666,12 @@ namespace GitHub.Runner.Listener
             finally
             {
                 Busy = false;
+                
+                if (JobCompleted != null)
+                {
+                    _term.WriteLine($"Job {message.JobDisplayName} completed");
+                    JobCompleted(this, new EventArgs());
+                }
             }
         }
 

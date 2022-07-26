@@ -360,13 +360,16 @@ namespace GitHub.Runner.Listener
                     bool runOnceJobReceived = false;
                     jobDispatcher = HostContext.CreateService<IJobDispatcher>();
 
+                    jobDispatcher.JobStarted += _listener.OnJobStarted;
+                    jobDispatcher.JobCompleted += _listener.OnJobCompleted;
+
                     while (!HostContext.RunnerShutdownToken.IsCancellationRequested)
                     {
                         TaskAgentMessage message = null;
                         bool skipMessageDeletion = false;
                         try
                         {
-                            Task<TaskAgentMessage> getNextMessage = _listener.GetNextMessageAsync(messageQueueLoopTokenSource.Token);
+                            Task<TaskAgentMessage> getNextMessage = _listener.GetNextMessageAsync(messageQueueLoopTokenSource);
                             if (autoUpdateInProgress)
                             {
                                 Trace.Verbose("Auto update task running at backend, waiting for getNextMessage or selfUpdateTask to finish.");
