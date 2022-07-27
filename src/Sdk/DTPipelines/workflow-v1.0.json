@@ -369,7 +369,7 @@
     "container-mapping": {
       "mapping": {
         "properties": {
-          "image": "non-empty-string",
+          "image": "string",
           "options": "non-empty-string",
           "env": "container-env",
           "ports": "sequence-of-non-empty-string",
